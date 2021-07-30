@@ -17,7 +17,8 @@ char fileName[1010];
 const double PI = 3.141592653589793;
 const double EXP = 2.71828182845904;
 const double SIGMA = 1;
-const double SIGMA_COEF = 6.0;
+const double SIGMA_COEF = 12.0;
+const double COLOR_SIGMA = 64.0;
 double GaussianFunction(double x, double sigma = SIGMA) {
 	const double tmp = 1.0 / ((sqrt(2 * PI)) * sigma);
 	return tmp * exp(-(x * x) / (2 * sigma * sigma));
@@ -82,11 +83,25 @@ Mat MyGaussianFiltering(Mat src, int kernelSize = 5) {
 	}
 	return res;
 }
+vector<vector<Vec3f>> MatNormalization(Mat img) {
+	vector<vector<Vec3f>> res(img.rows);
+	for (int i = 0; i < img.rows; ++i) {
+		res[i].resize(img.cols);
+		for (int j = 0; j < img.cols; ++j) {
+			auto cur = img.at<Vec3b>(i, j);
+			double d = sqrt(cur[0] * cur[0] + cur[1] * cur[1] + cur[2] * cur[2]);
+			for (int k = 0; k < 3; ++k) {
+				res[i][j][k] = cur[k] / d;
+			}
+		}
+	}
+	return res;
+}
 Mat JointBilateralFiltering(Mat src, Mat target, int kernelSize = 5, double sigma = -1, double colorSigma = -1) {
 	if (sigma == -1)
 		sigma = kernelSize / SIGMA_COEF;
 	if (colorSigma == -1)
-		colorSigma = 64.0;
+		colorSigma = COLOR_SIGMA;
 
 	auto filter = GetGaussianFilter(kernelSize, sigma);
 	Mat res = Mat(src.rows, src.cols, CV_8UC3);
@@ -102,15 +117,53 @@ Mat JointBilateralFiltering(Mat src, Mat target, int kernelSize = 5, double sigm
 						int ny = j + (l - kernelSize / 2);
 
 						auto origin = src.at<Vec3b>(i, j)[c];
-						auto np = src.at<Vec3b>(nx, ny)[c];
 
 						if (0 <= nx && nx < res.rows && 0 <= ny && ny < res.cols) {
+							auto np = src.at<Vec3b>(nx, ny)[c];
 							sum += filter[k][l] * target.at<Vec3b>(nx, ny)[c] * GaussianFunction(origin - np, colorSigma);
-							sum2 += filter[k][l] *  GaussianFunction(origin - np, colorSigma);
+							sum2 += filter[k][l] * GaussianFunction(origin - np, colorSigma);
 						}
 					}
 				}
 				res.at<Vec3b>(i, j)[c] = sum / sum2;
+			}
+
+		}
+	}
+	return res;
+}
+Mat JointBilateralFilteringWithNormalization(Mat src, Mat target, int kernelSize = 5, double sigma = -1, double colorSigma = -1) {
+	Mat srcNorm, targetNorm;
+	src.convertTo(srcNorm, CV_32FC3, 1.0 / 255);
+	target.convertTo(targetNorm, CV_32FC3, 1.0 / 255);
+	if (sigma == -1)
+		sigma = kernelSize / SIGMA_COEF;
+	if (colorSigma == -1)
+		colorSigma = COLOR_SIGMA;
+
+	auto filter = GetGaussianFilter(kernelSize, sigma);
+	Mat res = Mat(src.rows, src.cols, CV_32FC3);
+	for (int i = 0; i < res.rows; ++i) {
+		for (int j = 0; j < res.cols; ++j) {
+			for (int c = 0; c < 3; ++c) {
+				double sum = 0.0;
+				double sum2 = 0.0;
+				int cnt = 0;
+				for (int k = 0; k < kernelSize; ++k) {
+					for (int l = 0; l < kernelSize; ++l) {
+						int nx = i + (k - kernelSize / 2);
+						int ny = j + (l - kernelSize / 2);
+
+						auto origin = srcNorm.at<Vec3f>(i, j)[c];
+
+						if (0 <= nx && nx < res.rows && 0 <= ny && ny < res.cols) {
+							auto np = srcNorm.at<Vec3f>(nx, ny)[c];
+							sum += filter[k][l] * targetNorm.at<Vec3f>(nx, ny)[c] * GaussianFunction(origin - np, colorSigma);
+							sum2 += filter[k][l] * GaussianFunction(origin - np, colorSigma);
+						}
+					}
+				}
+				res.at<Vec3f>(i, j)[c] = (sum / sum2) ;
 			}
 
 		}
@@ -156,6 +209,7 @@ int main() {
 	waitKey(0);
 	*/
 	//Filtering Test
+	/*
 	Mat img1 = imread("pp/3.png", 1);
 	Mat img2 = imread("pp/3.png", 1);
 	BackgroundCorrection(img1, img1, 1);
@@ -167,21 +221,26 @@ int main() {
 	imshow("CV Gaussian", res2);
 	auto res3 = JointBilateralFiltering(img1, img1, 9, -1, 32);
 	imshow("My Bilateral", res3);
-	waitKey(0);
+	auto res4 = JointBilateralFilteringWithNormalization(img1, img1, 9, -1, 32);
+	imshow("My Bilateral-2", res4);
+	waitKey(0); return 0;
+	*/
 
 	//GetRMSE
-	string rootDir = "./20210721/";
+	string rootDir = "./20210728/";
 	string predDir = rootDir + "res/";
 	string resDir = rootDir + "concat/";
 
-	int imageCount = 1092;
+	int imageCount = 50;
 	char fName[1010];
 	double rmse = 0.0;
 	vector<pair<double, Mat>> result1, result2;
 
 	int kernelCount = 5;
 	int kernelStart = 5;
-	vector<double> RMSE(kernelCount);
+	vector<double> RMSE(kernelCount + 1);
+	int fileCount = 10;
+
 	for (int i = 1; i <= imageCount; ++i) {
 		printf("%d/%d\n", i, imageCount);
 		Mat inp, gt, pred;
@@ -196,9 +255,16 @@ int main() {
 		hconcat(concatImg, gt, concatImg);
 		hconcat(concatImg, pred, concatImg);
 		for (int kk = kernelStart; kk <= kernelStart + 2 * kernelCount; kk += 2) {
-			Mat JBF = JointBilateralFiltering(inp, pred, kk);
-			hconcat(concatImg, JBF, concatImg);
-			auto res2 = GetRMSE(gt, JBF);
+			//Mat JBF = JointBilateralFiltering(inp, pred, kk);
+			//hconcat(concatImg, JBF, concatImg);
+			//auto res2 = GetRMSE(gt, JBF);
+			//RMSE[(kk - kernelStart) / 2] += res2;
+
+			Mat JBF = JointBilateralFilteringWithNormalization(inp, pred, kk, (kk - 3) / 6.0);
+			Mat tmpImg;
+			JBF.convertTo(tmpImg, CV_8UC3, 255);
+			hconcat(concatImg, tmpImg, concatImg);
+			auto res2 = GetRMSE(gt, tmpImg);
 			RMSE[(kk - kernelStart) / 2] += res2;
 		}
 
@@ -211,15 +277,15 @@ int main() {
 		return p1.first < p2.first;
 		});
 	rmse /= imageCount;
-	for (auto i : RMSE)
-		i /= imageCount;
-	int c = 1;
+	for(int i = 0; i<RMSE.size(); ++i)
+		RMSE[i] /= imageCount;
 	printf("%lf\n", rmse);
-	for (auto i : result1) {
-		sprintf(fName, "%s%d.png", resDir.c_str(), c++);
-		imwrite(fName, i.second);
-	}
 	for (int i = 0; i < RMSE.size(); ++i) {
-		printf("Kernel size = %d(COEF %lf): %lf\n", kernelStart + i * 2, SIGMA_COEF, RMSE[i]);
+		//printf("Kernel size = %d(COEF %lf): %lf\n", kernelStart + i * 2, SIGMA_COEF, RMSE[i]);
+		printf("%lf\n", RMSE[i]);
+	}
+	for (int i = 0; i < result1.size(); ++i) {
+		sprintf(fName, "%s%d.png", resDir.c_str(), fileCount++);
+		imwrite(fName, result1[i].second);
 	}
 }
